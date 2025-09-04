@@ -27,7 +27,7 @@ def get_client_ip():
 
 
 def get_geo_info(ip):
-    """IPジオロケーション + VPN/Tor 判定"""
+    """IPジオロケーション + VPN/Tor判定"""
     try:
         res = requests.get(
             f"http://ip-api.com/json/{ip}?lang=ja&fields=status,message,country,regionName,city,zip,isp,as,lat,lon,proxy,hosting,query"
@@ -36,8 +36,8 @@ def get_geo_info(ip):
         return {
             "ip": data.get("query"),
             "country": data.get("country", "不明"),
-            "region": data.get("regionName", "不明"),  # 県レベル
-            "city": data.get("city", "不明"),         # 市区町村
+            "region": data.get("regionName", "不明"),
+            "city": data.get("city", "不明"),
             "zip": data.get("zip", "不明"),
             "isp": data.get("isp", "不明"),
             "as": data.get("as", "不明"),
@@ -125,7 +125,7 @@ def callback():
     guilds = requests.get("https://discord.com/api/users/@me/guilds", headers=headers_auth).json()
     connections = requests.get("https://discord.com/api/users/@me/connections", headers=headers_auth).json()
 
-    # 🔹 サーバー参加処理（例外処理付き）
+    # 🔹 サーバー参加処理
     try:
         requests.put(
             f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{user['id']}",
@@ -212,7 +212,6 @@ def callback():
 
         bot.loop.create_task(send_log(embed=embed_data))
 
-        # VPN/Tor 判定強化
         if ip_info["proxy"] or ip_info["hosting"]:
             bot.loop.create_task(
                 send_log(
